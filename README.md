@@ -6,6 +6,18 @@
 project-root/
 ├── docker-compose.yml
 ├── README.md
+├── dashboard-frontend/
+│   ├── .env.example
+│   ├── Dockerfile
+│   ├── index.html
+│   ├── package.json
+│   ├── postcss.config.js
+│   ├── tailwind.config.js
+│   ├── vite.config.js
+│   └── src/
+│       ├── App.jsx
+│       ├── index.css
+│       └── main.jsx
 ├── order-service/
 │   ├── .env.example
 │   ├── .dockerignore
@@ -63,6 +75,7 @@ Two services communicate asynchronously:
 - `notification-service` listens for RabbitMQ events and processes notifications
 - `stream-bridge-service` forwards RabbitMQ events to Kafka
 - `analytics-service` consumes Kafka events and serves a live dashboard
+- `dashboard-frontend` renders the real-time React dashboard from analytics snapshots
 
 The important idea is that the Order Service does not call downstream services directly. It emits an in-process event, buffers it in BullMQ on Redis, publishes to RabbitMQ for service fan-out, then bridges to Kafka for streaming analytics and a real-time dashboard.
 
@@ -78,12 +91,13 @@ Flow:
 6. RabbitMQ routes the event to the notification queue and the analytics bridge queue.
 7. The Notification Service consumes the event asynchronously.
 8. The Stream Bridge Service forwards the event to Kafka.
-9. The Analytics Service consumes Kafka messages, aggregates orders by day, and pushes live updates to the dashboard.
+9. The Analytics Service consumes Kafka messages, aggregates orders by day, and pushes live updates through Server-Sent Events.
+10. The React frontend subscribes to the SSE stream and redraws the dashboard in real time.
 
 ## Streaming Pipeline
 
 ```text
-EventEmitter -> BullMQ/Redis -> RabbitMQ -> Kafka -> Analytics Dashboard
+EventEmitter -> BullMQ/Redis -> RabbitMQ -> Kafka -> Analytics Service -> React Dashboard
 ```
 
 Why this shape works well:
@@ -93,6 +107,26 @@ Why this shape works well:
 - `RabbitMQ` fans out events to operational consumers.
 - `Kafka` gives the analytics side an append-only event stream.
 - `analytics-service` materializes a dashboard-friendly read model in real time.
+- `dashboard-frontend` keeps the browser connected to `/dashboard/stream` for live UI updates.
+
+## Frontend Dashboard
+
+The React dashboard lives in `dashboard-frontend` and uses:
+
+- Vite for development and bundling
+- React for the UI
+- Tailwind CSS for styling
+- Server-Sent Events for real-time updates
+
+The browser does not connect directly to Kafka. Instead, it connects to the analytics HTTP layer:
+
+- `GET /dashboard` for the latest snapshot
+- `GET /dashboard/stream` for live SSE updates
+
+The Vite dev server proxies `/api/*` to `analytics-service`, so the frontend can call:
+
+- `/api/dashboard`
+- `/api/dashboard/stream`
 
 ## How RabbitMQ Fits Between the 2 Services
 
@@ -149,6 +183,7 @@ This starts:
 - Notification Service on `3002`
 - Stream Bridge Service on `3003`
 - Analytics Service on `3004`
+- Dashboard Frontend on `5173`
 
 ### 2. Open RabbitMQ Management UI
 
@@ -198,20 +233,27 @@ curl http://localhost:3004/dashboard/orders-by-day
 ### 7. Open the live dashboard
 
 ```text
-http://localhost:3004/dashboard/live
+http://localhost:5173
 ```
 
 ## Run Services Manually
 
-### 1. Start RabbitMQ only
+### 1. Start infrastructure only
 
 ```bash
-docker compose up rabbitmq
+docker compose up redis rabbitmq kafka
 ```
 
 ### 2. Install dependencies
 
 In one terminal:
+
+```bash
+cd dashboard-frontend
+npm install
+```
+
+In another terminal:
 
 ```bash
 cd order-service
@@ -225,7 +267,28 @@ cd notification-service
 npm install
 ```
 
+In another terminal:
+
+```bash
+cd stream-bridge-service
+npm install
+```
+
+In another terminal:
+
+```bash
+cd analytics-service
+npm install
+```
+
 ### 3. Start the services
+
+Frontend:
+
+```bash
+cd dashboard-frontend
+npm run dev
+```
 
 Order Service:
 
@@ -241,6 +304,20 @@ cd notification-service
 npm start
 ```
 
+Stream Bridge Service:
+
+```bash
+cd stream-bridge-service
+npm start
+```
+
+Analytics Service:
+
+```bash
+cd analytics-service
+npm start
+```
+
 ### 4. Use the APIs
 
 Health checks:
@@ -248,6 +325,8 @@ Health checks:
 ```bash
 curl http://localhost:3001/health
 curl http://localhost:3002/health
+curl http://localhost:3003/health
+curl http://localhost:3004/health
 ```
 
 Create an order:
@@ -269,6 +348,12 @@ Check notifications:
 curl http://localhost:3002/notifications
 ```
 
+Open frontend:
+
+```text
+http://localhost:5173
+```
+
 ## Expected Output Flow
 
 When you create an order, you should see logs similar to:
@@ -288,6 +373,7 @@ Typical API behavior:
 - Analytics aggregation updates in the background from Kafka
 - `GET /notifications` shows the consumed events after they are processed
 - `GET /dashboard/orders-by-day` shows the real-time day-by-day order counts
+- `http://localhost:5173` redraws automatically as new order events arrive
 
 ## Endpoints
 
@@ -313,6 +399,10 @@ Typical API behavior:
 - `GET /dashboard/orders-by-day`
 - `GET /dashboard/stream`
 - `GET /dashboard/live`
+
+### Dashboard Frontend
+
+- `GET /` via Vite on `http://localhost:5173`
 
 ## Example Successful Order Response
 

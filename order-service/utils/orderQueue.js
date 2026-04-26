@@ -40,7 +40,7 @@ async function enqueueOrderCreatedEvent(order) {
     "order.created",
     { order },
     {
-      jobId: `order-created:${order.orderId}`
+      jobId: `order-created-${order.orderId}`
     }
   );
 
